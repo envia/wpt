@@ -12,6 +12,7 @@ from typing import Generator, Tuple
 import pytest
 
 import localpaths  # type: ignore
+from wptserve.response import Response
 from . import serve
 from .serve import (
     ConfigBuilder,
@@ -167,6 +168,46 @@ def test_inject_script_parse_error():
     # On a parse error, the script should not be injected and the original content should be
     # returned.
     assert INJECT_SCRIPT_MARKER not in inject_script(html.replace(INJECT_SCRIPT_MARKER, b""), INJECT_SCRIPT_MARKER)
+
+
+@pytest.mark.parametrize("content_type", [None, b"text/plain"])
+def test_script_injector_preserves_redirect(content_type):
+    request = MagicMock()
+    response = Response(MagicMock(), request)
+
+    def redirect(request, response):
+        response.status = 302
+        response.headers.set(b"Location", b"/target.html")
+        if content_type is not None:
+            response.headers.set(b"Content-Type", content_type)
+        response.content = b"Redirecting"
+
+    wrapper = serve.HtmlScriptInjectorHandlerWrapper(
+        inject=b"window.injected = true;", wrap=redirect)
+
+    assert wrapper(request, response) is response
+    assert response.status == (302, None)
+    assert response.headers.get(b"Location") == [b"/target.html"]
+    assert response.headers.get(b"Content-Type") == ([] if content_type is None else [content_type])
+    assert response.content == b"Redirecting"
+
+
+def test_script_injector_injects_html():
+    request = MagicMock()
+    response = Response(MagicMock(), request)
+
+    def html(request, response):
+        response.headers.set(b"Content-Type", b"text/html")
+        response.content = b"<!doctype html><p>Test page</p>"
+
+    script = b"window.injected = true;"
+    wrapper = serve.HtmlScriptInjectorHandlerWrapper(inject=script, wrap=html)
+
+    assert wrapper(request, response) is response
+    assert response.status == (200, None)
+    assert response.headers.get(b"Content-Type") == [b"text/html"]
+    assert response.content.count(script) == 1
+    assert b"<p>Test page</p>" in response.content
 
 
 @pytest.fixture
